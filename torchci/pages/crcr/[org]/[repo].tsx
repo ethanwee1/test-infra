@@ -493,6 +493,43 @@ function usePrInfo(
   }, [data]);
 }
 
+// ---- Commit Info Hook (for nightly view) ----
+
+interface CommitInfo {
+  sha: string;
+  title: string;
+  author: string;
+}
+
+function useCommitInfo(
+  upstreamRepo: string,
+  shas: string[]
+): Map<string, CommitInfo> {
+  const dedupedShas = useMemo(
+    () => Array.from(new Set(shas.filter(Boolean))).slice(0, 50),
+    [shas]
+  );
+  const url =
+    upstreamRepo && dedupedShas.length > 0
+      ? `/api/crcr/commit-info?repo=${encodeURIComponent(
+          upstreamRepo
+        )}&shas=${encodeURIComponent(dedupedShas.join(","))}`
+      : null;
+  const { data } = useSWR<CommitInfo[]>(url, fetcherHandleError, {
+    revalidateOnFocus: false,
+  });
+
+  return useMemo(() => {
+    const map = new Map<string, CommitInfo>();
+    if (data) {
+      for (const c of data) {
+        map.set(c.sha, c);
+      }
+    }
+    return map;
+  }, [data]);
+}
+
 // ---- Table Styles (matching main HUD) ----
 
 const headerBaseStyle: CSSProperties = {
@@ -830,6 +867,13 @@ function CrcrNightlyMatrix({
     };
   }, [data]);
 
+  const upstreamRepo = matrix?.rows[0]?.upstreamRepo ?? "pytorch/pytorch";
+  const nightlyShas = useMemo(
+    () => (matrix?.rows ?? []).map((r) => r.sha),
+    [matrix]
+  );
+  const commitInfoMap = useCommitInfo(upstreamRepo, nightlyShas);
+
   if (error) {
     return (
       <Typography color="error">
@@ -885,75 +929,81 @@ function CrcrNightlyMatrix({
           </tr>
         </thead>
         <tbody>
-          {matrix.rows.map((row) => (
-            <tr
-              key={row.sha}
-              style={{ borderBottom: "1px solid #30363d" }}
-            >
-              <td style={cellStyle}>
-                <LocalTimeDisplay timestamp={row.latestTime} />
-              </td>
-              <td style={cellStyle}>
-                <a
-                  href={`https://github.com/${row.upstreamRepo}/commit/${row.sha}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: "#58a6ff", textDecoration: "none" }}
-                >
-                  {row.sha.substring(0, 7)}
-                </a>
-              </td>
-              <td style={{ ...cellStyle, maxWidth: 340 }}>
-                <a
-                  href={`https://github.com/${row.upstreamRepo}/commit/${row.sha}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={`nightly release (${row.sha})`}
-                  style={{
-                    color: "#58a6ff",
-                    textDecoration: "none",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    display: "block",
-                  }}
-                >
-                  {`nightly release (${row.sha.substring(0, 20)}...)`}
-                </a>
-              </td>
-              {columns.map((col) => {
-                if (col.type === "group" && col.members) {
-                  const groupJobs = col.members
-                    .map((m) => row.jobs.get(m))
-                    .filter((j): j is CrcrJobRow => j != null);
+          {matrix.rows.map((row) => {
+            const commit = commitInfoMap.get(row.sha);
+            const commitTitle =
+              commit?.title || `nightly (${row.sha.substring(0, 12)})`;
+            return (
+              <tr
+                key={row.sha}
+                style={{ borderBottom: "1px solid #30363d" }}
+              >
+                <td style={cellStyle}>
+                  <LocalTimeDisplay timestamp={row.latestTime} />
+                </td>
+                <td style={cellStyle}>
+                  <a
+                    href={`https://github.com/${row.upstreamRepo}/commit/${row.sha}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: "#58a6ff", textDecoration: "none" }}
+                  >
+                    {row.sha.substring(0, 7)}
+                  </a>
+                </td>
+                <td style={{ ...cellStyle, maxWidth: 340 }}>
+                  <Tooltip title={commitTitle}>
+                    <a
+                      href={`https://github.com/${row.upstreamRepo}/commit/${row.sha}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        color: "#58a6ff",
+                        textDecoration: "none",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        display: "block",
+                      }}
+                    >
+                      {commitTitle}
+                    </a>
+                  </Tooltip>
+                </td>
+                {columns.map((col) => {
+                  if (col.type === "group" && col.members) {
+                    const groupJobs = col.members
+                      .map((m) => row.jobs.get(m))
+                      .filter((j): j is CrcrJobRow => j != null);
+                    return (
+                      <td
+                        key={col.name}
+                        style={{ ...cellStyle, textAlign: "center" }}
+                      >
+                        {groupJobs.length > 0 ? (
+                          <GroupedJobCell
+                            jobs={groupJobs}
+                            groupName={col.name}
+                          />
+                        ) : (
+                          "–"
+                        )}
+                      </td>
+                    );
+                  }
+                  const job = row.jobs.get(col.name);
                   return (
                     <td
                       key={col.name}
                       style={{ ...cellStyle, textAlign: "center" }}
                     >
-                      {groupJobs.length > 0 ? (
-                        <GroupedJobCell
-                          jobs={groupJobs}
-                          groupName={col.name}
-                        />
-                      ) : (
-                        "–"
-                      )}
+                      {job ? <JobCell job={job} /> : "–"}
                     </td>
                   );
-                }
-                const job = row.jobs.get(col.name);
-                return (
-                  <td
-                    key={col.name}
-                    style={{ ...cellStyle, textAlign: "center" }}
-                  >
-                    {job ? <JobCell job={job} /> : "–"}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
+                })}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
